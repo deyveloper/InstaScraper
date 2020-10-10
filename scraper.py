@@ -1,13 +1,13 @@
 import datetime
 import requests
 import json
+import re
 
 
 def getUserId(username):
     url = 'https://www.instagram.com/{}/?__a=1'.format(username)
     data = requests.get(url).json()
     return data['graphql']['user']['id']
-
 
 def getUserPosts(userId, query_hash = '56a7068fea504063273cc2120ffd54f3', cursor = None, count = None, start = None, end = None):
     url = 'https://www.instagram.com/graphql/query/?query_hash=' + query_hash + '&variables={"id":' + userId + ', "first": "50"'
@@ -140,7 +140,8 @@ def getUserPosts(userId, query_hash = '56a7068fea504063273cc2120ffd54f3', cursor
                     
                     currData['preview'] = node['thumbnail_src']
                     currData['shortcode'] = node['shortcode']
-                    currData['caption'] = node['edge_media_to_caption']['edges'][0]['node']['text']
+                    if node['edge_media_to_caption']['edges']:
+                        currData['caption'] = node['edge_media_to_caption']['edges'][0]['node']['text']
                     currData['comments'] = node['edge_media_to_comment']['count']
                     currData['likes'] = node['edge_media_preview_like']['count']
                     currData['timestamp'] = node['taken_at_timestamp']
@@ -185,7 +186,8 @@ def getUserPosts(userId, query_hash = '56a7068fea504063273cc2120ffd54f3', cursor
                     
                     currData['preview'] = node['thumbnail_src']
                     currData['shortcode'] = node['shortcode']
-                    currData['caption'] = node['edge_media_to_caption']['edges'][0]['node']['text']
+                    if node['edge_media_to_caption']['edges']:
+                        currData['caption'] = node['edge_media_to_caption']['edges'][0]['node']['text']
                     currData['comments'] = node['edge_media_to_comment']['count']
                     currData['likes'] = node['edge_media_preview_like']['count']
                     currData['timestamp'] = node['taken_at_timestamp']
@@ -195,12 +197,77 @@ def getUserPosts(userId, query_hash = '56a7068fea504063273cc2120ffd54f3', cursor
     if end:
         resultDataCopy = resultData
         resultData = []
-
         for data in resultDataCopy:
             if end > datetime.datetime.fromtimestamp(int(data['timestamp'])):
                 resultData.append(data)
 
-    return { "resultData": resultData, "end_cursor": end_cursor }
+    return { "resultData": resultData, "end_cursor": end_cursor, "next_page": nextPage }
 
+def getPostData(postShortcode):
+    url = 'https://instagram.com/p/{}'.format(postShortcode)
 
-print((getUserPosts("173560420", start=datetime.datetime(2020, 10, 7), end=datetime.datetime(2020, 10, 11))))
+    data = requests.get(url).text
+    match = re.search(
+        r"<script[^>]*>\s*window._sharedData\s*=\s*((?!<script>).*)\s*;\s*</script>",
+        data,
+    )
+    data = json.loads(match.group(1))['entry_data']['PostPage'][0]['graphql']['shortcode_media']
+
+    currData = {
+        "is_album": False,
+        "is_image": False,
+        "is_video": False,
+        "preview": data['display_url'],
+        "video_url": None,
+        "shortcode": postShortcode,
+        "nodes": [],
+        'caption': None,
+        "comments": None,
+        "likes": None,
+        "timestamp": None
+    }
+
+    typename = data['__typename']
+    if typename == 'GraphSidecar':
+        currData['is_album'] = True
+    elif typename == 'GraphImage':
+        currData['is_image'] = True
+    elif typename == 'GraphVideo':
+        currData['is_video'] = True
+
+    if "edge_media_to_comment" in data:
+        currData['comments'] = data["edge_media_to_comment"]["count"]
+    else:
+        currData['comments'] = data["edge_media_to_parent_comment"]["count"]
+    
+    currData['likes'] = data['edge_media_preview_like']['count']
+    currData['timestamp'] = data['taken_at_timestamp']
+    if data['edge_media_to_caption']['edges']:
+        currData['caption'] = data['edge_media_to_caption']['edges'][0]['node']['text']    
+    
+    if currData['is_album']:
+        if "edge_sidecar_to_children" in data:
+            for edge in data["edge_sidecar_to_children"]["edges"]:
+                node = {
+                    'shortcode': edge['node']['shortcode'],
+                    'id': None,
+                    'is_video': None,
+                    'video_url': None,
+                    'display_url': None,
+                    'resources': None
+                }
+                node['id'] = edge["node"]["id"]
+                node['is_video'] = edge["node"]["is_video"]
+                if node['is_video'] and "video_url" in edge["node"]:
+                    node['video_url'] = edge["node"]["video_url"]
+                node['display_url'] = edge["node"]["display_url"]
+                if "display_resources" in edge["node"]:
+                    node['resources'] = [resource["src"] for resource in edge["node"]["display_resources"]]
+                elif "thumbnail_resources" in edge["node"]:
+                    node['resources'] = [resource["src"] for resource in edge["node"]["thumbnail_resources"]]
+
+                currData['nodes'].append(node)
+    elif currData['is_video']:
+        currData['video_url'] = data['video_url']
+
+    return currData
